@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import database
 import repositories
 import reports
 import tools
@@ -46,6 +47,7 @@ class MainWindow(QMainWindow):
     def __init__(self, connection: sqlite3.Connection) -> None:
         super().__init__()
         self.connection = connection
+        self.database_path = database.get_database_path(connection)
         self._competitions_by_id: dict[int, sqlite3.Row] = {}
         self._challenges_by_id: dict[int, sqlite3.Row] = {}
 
@@ -530,6 +532,14 @@ class MainWindow(QMainWindow):
         export_path = Path(path)
         if export_path.suffix == "":
             export_path = export_path.with_suffix(f".{export_format}")
+        if reports.overwrites_database(export_path, self.database_path):
+            QMessageBox.warning(
+                self,
+                "Экспорт запрещён",
+                "Нельзя сохранять отчёт поверх файла базы данных приложения.\n"
+                "Выберите другое место сохранения.",
+            )
+            return
         try:
             challenges = repositories.get_challenges(self.connection, competition_id=competition_id)
             if export_format == "csv":

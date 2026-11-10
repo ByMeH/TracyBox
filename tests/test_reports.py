@@ -1,10 +1,13 @@
 import csv
+import os
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 import reports
 import repositories
+from database import connect_database, get_database_path, initialize_database
 
 
 @pytest.fixture
@@ -169,6 +172,136 @@ def test_export_to_unavailable_path_raises_oserror(connection, filled_competitio
         reports.export_competition_txt(
             competition, load_entries(connection, filled_competition), tmp_path / "missing" / "report.txt"
         )
+
+
+@pytest.mark.parametrize("export_format", ["csv", "txt"])
+def test_normal_destination_is_allowed(connection, tmp_path, export_format):
+    destination = tmp_path / f"report.{export_format}"
+
+    assert not reports.overwrites_database(destination, get_database_path(connection))
+
+
+def test_save_report_over_database_is_rejected(connection, filled_competition):
+    database_path = get_database_path(connection)
+    before = database_path.read_bytes()
+
+    assert reports.overwrites_database(database_path, database_path)
+
+    assert database_path.read_bytes() == before
+
+
+def test_equivalent_paths_to_database_are_rejected(tmp_path):
+    directory = tmp_path / "data"
+    directory.mkdir()
+    database_path = directory / "tracebox.db"
+    connection = connect_database(database_path)
+    initialize_database(connection)
+    connection.close()
+
+    file_link = tmp_path / "tracebox-link.db"
+    file_link.symlink_to(database_path)
+    directory_link = tmp_path / "link"
+    directory_link.symlink_to(directory)
+    hardlink = tmp_path / "tracebox-hardlink.db"
+    os.link(database_path, hardlink)
+
+    destinations = [
+        database_path,
+        directory / "." / "tracebox.db",
+        directory / "sub" / ".." / "tracebox.db",
+        Path(f"{directory}//tracebox.db"),
+        Path(os.path.relpath(database_path)),
+        file_link,
+        directory_link / "tracebox.db",
+        hardlink,
+    ]
+
+    for destination in destinations:
+        assert reports.overwrites_database(destination, database_path), destination
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_absent_sidecar_destination_is_rejected(connection, suffix):
+    database_path = get_database_path(connection)
+
+    assert reports.overwrites_database(Path(f"{database_path}{suffix}"), database_path)
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_existing_sidecar_destination_is_rejected(connection, suffix):
+    database_path = get_database_path(connection)
+    sidecar = Path(f"{database_path}{suffix}")
+    sidecar.write_bytes(b"journal data")
+    before = sidecar.read_bytes()
+
+    assert reports.overwrites_database(sidecar, database_path)
+    assert sidecar.read_bytes() == before
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_sidecar_equivalent_paths_are_rejected(connection, tmp_path, suffix):
+    database_path = get_database_path(connection)
+    sidecar = Path(f"{database_path}{suffix}")
+    sidecar.write_bytes(b"journal data")
+    file_link = tmp_path / f"sidecar-link{suffix}"
+    file_link.symlink_to(sidecar)
+    hardlink = tmp_path / f"sidecar-hardlink{suffix}"
+    os.link(sidecar, hardlink)
+
+    destinations = [
+        sidecar,
+        database_path.parent / "sub" / ".." / sidecar.name,
+        file_link,
+        hardlink,
+    ]
+
+    for destination in destinations:
+        assert reports.overwrites_database(destination, database_path), destination
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_neighbouring_files_are_allowed(connection, suffix):
+    database_path = get_database_path(connection)
+
+    assert not reports.overwrites_database(Path(f"{database_path}{suffix}-backup"), database_path)
+    assert not reports.overwrites_database(Path(f"{database_path}{suffix}copy"), database_path)
+
+
+def test_different_files_are_allowed(connection, tmp_path):
+    database_path = get_database_path(connection)
+
+    assert not reports.overwrites_database(tmp_path / "report.csv", database_path)
+    assert not reports.overwrites_database(tmp_path / "missing" / "report.txt", database_path)
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root игнорирует права доступа к файлам",
+)
+def test_rejection_check_does_not_open_database_for_writing(connection, filled_competition):
+    database_path = get_database_path(connection)
+    database_path.chmod(0o444)
+    try:
+        assert reports.overwrites_database(database_path, database_path)
+    finally:
+        database_path.chmod(0o644)
+
+
+def test_unnormalizable_path_is_rejected(connection):
+    database_path = get_database_path(connection)
+
+    assert reports.overwrites_database("report\0.csv", database_path)
+
+
+def test_undeterminable_equivalence_is_rejected(connection, tmp_path, monkeypatch):
+    database_path = get_database_path(connection)
+
+    def denied(self, other):
+        raise PermissionError("невозможно определить")
+
+    monkeypatch.setattr(Path, "samefile", denied)
+
+    assert reports.overwrites_database(tmp_path / "report.csv", database_path)
 
 
 @pytest.mark.parametrize(

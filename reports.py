@@ -11,10 +11,41 @@ _CSV_COLUMNS = ("title", "category", "difficulty", "status", "points", "descript
 # и управляющие символы (0x00–0x1f). Linux запрещает только "/" и NUL.
 _FORBIDDEN_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
+# Служебные файлы SQLite рядом с базой: WAL, разделяемая память и журнал отката
+_DATABASE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+
 
 def sanitize_filename(name: str) -> str:
     # Windows запрещает имена, заканчивающиеся точкой или пробелом
     return _FORBIDDEN_NAME_CHARS.sub("_", name).strip(" .")
+
+
+def overwrites_database(path: Path | str, database_path: Path | str | None) -> bool:
+    """Определяет, указывает ли путь сохранения на файл базы данных или её служебные файлы."""
+    if database_path is None:
+        return False
+    try:
+        target = Path(path).resolve()
+        database = Path(database_path).resolve()
+        # SQLite создаёт служебные файлы рядом с путём базы, переданным при подключении
+        sidecars = [
+            Path(f"{database_path}{suffix}").resolve() for suffix in _DATABASE_SIDECAR_SUFFIXES
+        ]
+    except (OSError, RuntimeError, ValueError):
+        # безопасно сопоставить пути не удалось — надёжнее запретить экспорт
+        return True
+    for protected in (database, *sidecars):
+        if target == protected:
+            return True
+        try:
+            # файл может быть доступен под разными путями: ссылки, жёсткие ссылки, монтирование
+            if target.samefile(protected):
+                return True
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+    return False
 
 
 def export_challenges_csv(challenges: Sequence[sqlite3.Row], path: Path | str) -> None:

@@ -63,5 +63,13 @@ def connect_database(db_path: str | Path) -> sqlite3.Connection:
     return connection
 
 
+def get_database_path(connection: sqlite3.Connection) -> Path | None:
+    """Файл основной базы данных соединения; None для базы в памяти."""
+    for row in connection.execute("PRAGMA database_list"):
+        if row["name"] == "main":
+            return Path(row["file"]) if row["file"] else None
+    return None
+
+
 def initialize_database(connection: sqlite3.Connection) -> None:
     connection.executescript(_SCHEMA)

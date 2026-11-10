@@ -342,3 +342,336 @@ def test_csv_accepts_string_path(connection, competition_id, tmp_path):
     reports.export_challenges_csv(challenges, str(destination))
 
     assert destination.exists()
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("CON", "_CON"),
+        ("PRN", "_PRN"),
+        ("AUX", "_AUX"),
+        ("NUL", "_NUL"),
+        ("COM1", "_COM1"),
+        ("COM9", "_COM9"),
+        ("LPT1", "_LPT1"),
+        ("LPT9", "_LPT9"),
+        ("con.txt", "_con.txt"),
+        ("NUL.csv", "_NUL.csv"),
+        ("COM1.backup.txt", "_COM1.backup.txt"),
+        ("Lpt4.tar.gz", "_Lpt4.tar.gz"),
+        ("кон", "кон"),
+        ("_CON", "_CON"),
+    ],
+)
+def test_sanitize_reserved_device_names(name, expected):
+    assert reports.sanitize_filename(name) == expected
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("", "report"),
+        ("   ", "report"),
+        (" . . ", "report"),
+        ("a<b>c:d\"e|f?g*h", "a_b_c_d_e_f_g_h"),
+        ("a\x00b\tc\nd\x7f", "a_b_c_d_"),
+        ("отчёт по CTF", "отчёт по CTF"),
+        ("Отчёт. Итоговый", "Отчёт. Итоговый"),
+        (".report", ".report"),
+        ("конец .", "конец"),
+    ],
+)
+def test_sanitize_filename_cases(name, expected):
+    assert reports.sanitize_filename(name) == expected
+
+
+def test_sanitize_limits_long_name():
+    assert reports.sanitize_filename("а" * 400) == "а" * 255
+
+
+def test_sanitize_limits_long_name_keeps_extension():
+    result = reports.sanitize_filename("а" * 400 + ".csv")
+
+    assert len(result) == 255
+    assert result.endswith(".csv")
+
+
+def test_sanitize_limits_long_extension():
+    result = reports.sanitize_filename("report." + "b" * 400)
+
+    assert len(result) == 255
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "CTF 2026",
+        "a/b\\c",
+        "CON",
+        "con.txt",
+        ".report",
+        "report.csv",
+        "   ",
+        "",
+        "а" * 400 + ".csv",
+        "_COM1.backup.txt",
+    ],
+)
+def test_sanitize_filename_is_idempotent(name):
+    sanitized = reports.sanitize_filename(name)
+
+    assert reports.sanitize_filename(sanitized) == sanitized
+
+
+@pytest.mark.parametrize(
+    "name, export_format, expected",
+    [
+        ("report", "csv", "report.csv"),
+        ("report.", "csv", "report.csv"),
+        ("report.txt", "csv", "report.csv"),
+        ("report.csv", "txt", "report.txt"),
+        ("report.csv", "csv", "report.csv"),
+        (".report", "csv", ".report.csv"),
+        ("report.tar.gz", "csv", "report.tar.csv"),
+        ("REPORT.CSV", "csv", "REPORT.CSV"),
+        ("REPORT.CSV", "txt", "REPORT.txt"),
+        ("report.Csv", "csv", "report.Csv"),
+        ("report.TXT", "txt", "report.TXT"),
+    ],
+)
+def test_prepare_export_path_sets_extension(tmp_path, name, export_format, expected):
+    assert reports.prepare_export_path(tmp_path / name, export_format) == tmp_path / expected
+
+
+def test_prepare_export_path_keeps_parent_with_spaces(tmp_path):
+    directory = tmp_path / "CTF Reports"
+
+    assert reports.prepare_export_path(directory / "report", "csv") == directory / "report.csv"
+
+
+def test_prepare_export_path_keeps_cyrillic_parent(tmp_path):
+    directory = tmp_path / "Отчёты"
+
+    assert reports.prepare_export_path(directory / "итог", "txt") == directory / "итог.txt"
+
+
+def test_prepare_export_path_sanitizes_only_file_name(tmp_path):
+    directory = tmp_path / "CTF Reports"
+    path = reports.prepare_export_path(directory / "bad:name?.csv", "csv")
+
+    assert path.parent == directory
+    assert path.name == "bad_name_.csv"
+
+
+def test_prepare_export_path_keeps_relative_directory():
+    path = reports.prepare_export_path(Path("отчёты") / "report.csv", "txt")
+
+    assert path == Path("отчёты") / "report.txt"
+
+
+def test_prepared_path_landing_on_database_is_rejected(tmp_path):
+    database_path = tmp_path / "data.csv"
+    connection = connect_database(database_path)
+    initialize_database(connection)
+    try:
+        final = reports.prepare_export_path(tmp_path / "data.csv-wal", "csv")
+
+        assert final == database_path
+        assert reports.overwrites_database(final, database_path)
+    finally:
+        connection.close()
+
+
+def test_prepared_path_off_database_is_allowed(connection, tmp_path):
+    database_path = get_database_path(connection)
+    final = reports.prepare_export_path(tmp_path / "report.txt", "csv")
+
+    assert final == tmp_path / "report.csv"
+    assert not reports.overwrites_database(final, database_path)
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("COM¹", "_COM¹"),
+        ("COM²", "_COM²"),
+        ("COM³", "_COM³"),
+        ("LPT¹", "_LPT¹"),
+        ("LPT²", "_LPT²"),
+        ("LPT³", "_LPT³"),
+        ("com¹.txt", "_com¹.txt"),
+        ("LPT³.csv", "_LPT³.csv"),
+        ("Com².backup.txt", "_Com².backup.txt"),
+    ],
+)
+def test_sanitize_superscript_reserved_names(name, expected):
+    assert reports.sanitize_filename(name) == expected
+
+
+def test_prepare_export_path_limits_final_component_units(tmp_path):
+    path = reports.prepare_export_path(tmp_path / ("a" * 255), "csv")
+
+    assert path.name == "a" * 251 + ".csv"
+    assert len(path.name.encode("utf-16-le")) // 2 == 255
+    assert path.parent == tmp_path
+
+
+def test_prepare_export_path_keeps_txt_extension_after_truncation(tmp_path):
+    path = reports.prepare_export_path(tmp_path / ("отчёт" * 100 + ".txt"), "txt")
+
+    assert path.name.endswith(".txt")
+    assert len(path.name.encode("utf-16-le")) // 2 <= 255
+
+
+def test_sanitize_limits_emoji_name_by_utf16_units():
+    result = reports.sanitize_filename("😀" * 300)
+
+    assert len(result) == 127
+    assert len(result.encode("utf-16-le")) // 2 == 254
+
+
+def test_sanitize_truncation_does_not_split_emoji():
+    result = reports.sanitize_filename("а" * 250 + "😀" * 10)
+
+    assert result == "а" * 250 + "😀" * 2
+    assert len(result.encode("utf-16-le")) // 2 == 254
+
+
+@pytest.mark.parametrize(
+    "name, export_format",
+    [
+        ("report", "csv"),
+        ("a" * 255, "csv"),
+        ("отчёт" * 100 + ".txt", "txt"),
+        ("😀" * 300, "csv"),
+        ("а" * 250 + "😀" * 10, "txt"),
+        ("com¹.tar.gz", "csv"),
+    ],
+)
+def test_prepare_export_path_is_idempotent(tmp_path, name, export_format):
+    prepared = reports.prepare_export_path(tmp_path / name, export_format)
+
+    assert reports.prepare_export_path(prepared, export_format) == prepared
+
+
+def test_sanitize_truncation_does_not_end_with_space():
+    result = reports.sanitize_filename("a" * 254 + " b")
+
+    assert not result.endswith(" ")
+    assert result == "a" * 254
+
+
+def test_sanitize_truncation_does_not_end_with_dot():
+    result = reports.sanitize_filename("a" * 254 + "." + "b" * 300)
+
+    assert not result.endswith(".")
+    assert result == "a" * 254
+
+
+def test_sanitize_dots_only_truncation_returns_fallback():
+    result = reports.sanitize_filename("." * 255 + "a")
+
+    assert result == "report"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "a" * 254 + " b",
+        "a" * 254 + "." + "b" * 300,
+        "." * 255 + "a",
+        "😀" * 300 + " ",
+        "а" * 254 + ". ",
+    ],
+)
+def test_sanitize_truncated_result_is_idempotent(name):
+    sanitized = reports.sanitize_filename(name)
+
+    assert reports.sanitize_filename(sanitized) == sanitized
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "a" * 254 + " b",
+        "a" * 254 + "." + "b" * 300,
+        "." * 255 + "a",
+        "😀" * 300 + " ",
+        "а" * 254 + ". ",
+    ],
+)
+def test_sanitize_truncated_result_fits_utf16_limit(name):
+    result = reports.sanitize_filename(name)
+
+    assert len(result.encode("utf-16-le")) // 2 <= 255
+
+
+def test_sanitize_degenerate_stem_returns_fallback():
+    result = reports.sanitize_filename("." * 250 + ". " + ".csv")
+
+    assert result == "report"
+
+
+@pytest.mark.parametrize(
+    "name, export_format, expected",
+    [
+        ("." * 250 + ". " + ".csv", "csv", "report.csv"),
+        ("." * 250 + ". " + ".txt", "txt", "report.txt"),
+    ],
+)
+def test_prepare_export_path_adds_extension_to_fallback_name(
+    tmp_path, name, export_format, expected
+):
+    prepared = reports.prepare_export_path(tmp_path / name, export_format)
+
+    assert prepared.name == expected
+
+
+def test_sanitize_truncation_does_not_create_reserved_name():
+    result = reports.sanitize_filename("CON" + "x" * 300 + "." + "y" * 251)
+
+    assert result.split(".", 1)[0].upper() not in reports._RESERVED_DEVICE_NAMES
+    assert result.startswith("_")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "." * 250 + ". " + ".csv",
+        "CON" + "x" * 300 + "." + "y" * 251,
+    ],
+)
+def test_sanitize_edge_cases_remain_idempotent(name):
+    sanitized = reports.sanitize_filename(name)
+
+    assert reports.sanitize_filename(sanitized) == sanitized
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "." * 250 + ". " + ".csv",
+        "CON" + "x" * 300 + "." + "y" * 251,
+    ],
+)
+def test_sanitize_edge_cases_fit_utf16_limit(name):
+    result = reports.sanitize_filename(name)
+
+    assert len(result.encode("utf-16-le")) // 2 <= 255
+
+
+@pytest.mark.parametrize(
+    "name, export_format",
+    [
+        ("." * 250 + ". " + ".csv", "csv"),
+        ("." * 250 + ". " + ".txt", "txt"),
+        ("CON" + "x" * 300 + "." + "y" * 251, "csv"),
+    ],
+)
+def test_prepare_export_path_edge_cases_keep_extension_and_idempotent(
+    tmp_path, name, export_format
+):
+    prepared = reports.prepare_export_path(tmp_path / name, export_format)
+
+    assert prepared.name.lower().endswith("." + export_format)
+    assert reports.prepare_export_path(prepared, export_format) == prepared

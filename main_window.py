@@ -529,9 +529,7 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        export_path = Path(path)
-        if export_path.suffix == "":
-            export_path = export_path.with_suffix(f".{export_format}")
+        export_path = reports.prepare_export_path(path, export_format)
         if reports.overwrites_database(export_path, self.database_path):
             QMessageBox.warning(
                 self,

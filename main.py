@@ -22,24 +22,36 @@ def main() -> int:
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
+    connection: sqlite3.Connection | None = None
+    startup_failed = False
+    exit_code = 0
     try:
-        database_directory = Path.home() / ".tracebox"
-        database_directory.mkdir(parents=True, exist_ok=True)
-        connection = connect_database(database_directory / "tracebox.db")
-        initialize_database(connection)
-    except OSError as error:
-        QMessageBox.critical(None, "Ошибка каталога данных", f"Не удалось создать каталог данных: {error}")
-        return 1
-    except sqlite3.Error as error:
-        QMessageBox.critical(None, "Ошибка базы данных", f"Не удалось открыть базу данных: {error}")
-        return 1
+        try:
+            database_directory = Path.home() / ".tracebox"
+            database_directory.mkdir(parents=True, exist_ok=True)
+            connection = connect_database(database_directory / "tracebox.db")
+            initialize_database(connection)
+        except OSError as error:
+            startup_failed = True
+            QMessageBox.critical(None, "Ошибка каталога данных", f"Не удалось создать каталог данных: {error}")
+            return 1
+        except sqlite3.Error as error:
+            startup_failed = True
+            QMessageBox.critical(None, "Ошибка базы данных", f"Не удалось открыть базу данных: {error}")
+            return 1
 
-    try:
         window = MainWindow(connection)
         window.show()
         exit_code = app.exec()
     finally:
-        connection.close()
+        if connection is not None:
+            original_error = sys.exc_info()[0]
+            try:
+                connection.close()
+            except sqlite3.Error as close_error:
+                if not startup_failed and original_error is None:
+                    print(f"Не удалось закрыть базу данных: {close_error}", file=sys.stderr)
+                    exit_code = 1
     return exit_code
 
 

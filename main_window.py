@@ -475,8 +475,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            file_size = Path(path).stat().st_size
-            hashes = tools.calculate_file_hashes(path)
+            hashes, file_size = tools.calculate_stable_file_hashes(path)
+        except tools.FileChangedDuringHashing:
+            QMessageBox.warning(
+                self, "Файл изменён", "Файл изменился во время чтения. Повторите хеширование."
+            )
+            return
         except OSError as error:
             QMessageBox.critical(self, "Ошибка чтения файла", f"Не удалось прочитать файл: {error}")
             return

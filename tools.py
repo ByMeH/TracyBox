@@ -25,6 +25,22 @@ def calculate_file_hashes(path: Path | str) -> dict[str, str]:
     }
 
 
+class FileChangedDuringHashing(OSError):
+    """Файл изменился, пока вычислялись его хеши."""
+
+
+def calculate_stable_file_hashes(path: Path | str) -> tuple[dict[str, str], int]:
+    """Хеши и размер файла, который не изменился за время чтения."""
+    stat_before = Path(path).stat()
+    hashes = calculate_file_hashes(path)
+    stat_after = Path(path).stat()
+    before = (stat_before.st_size, stat_before.st_mtime_ns, stat_before.st_dev, stat_before.st_ino)
+    after = (stat_after.st_size, stat_after.st_mtime_ns, stat_after.st_dev, stat_after.st_ino)
+    if before != after:
+        raise FileChangedDuringHashing(path)
+    return hashes, stat_after.st_size
+
+
 def encode_base64(text: str) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 

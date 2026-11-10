@@ -1,6 +1,7 @@
 import base64
 import binascii
 import hashlib
+import os
 from unittest import mock
 
 import pytest
@@ -111,6 +112,83 @@ def test_hashes_match_hashlib_for_exactly_two_chunks(tmp_path):
     assert hashes["md5"] == hashlib.md5(data).hexdigest()
     assert hashes["sha1"] == hashlib.sha1(data).hexdigest()
     assert hashes["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_stable_hashes_unchanged_file(tmp_path):
+    data = b"stable payload"
+    path = tmp_path / "file.bin"
+    path.write_bytes(data)
+
+    hashes, file_size = tools.calculate_stable_file_hashes(path)
+
+    assert file_size == len(data)
+    assert hashes == {
+        "md5": hashlib.md5(data).hexdigest(),
+        "sha1": hashlib.sha1(data).hexdigest(),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+
+
+def test_stable_hashes_detect_size_change_during_reading(tmp_path):
+    path = tmp_path / "file.bin"
+    path.write_bytes(b"data")
+
+    def grow_and_hash(target):
+        with open(target, "rb") as file:
+            file.read()
+        path.write_bytes(b"data plus tail")
+        return {"md5": "0", "sha1": "0", "sha256": "0"}
+
+    with mock.patch.object(tools, "calculate_file_hashes", grow_and_hash):
+        with pytest.raises(tools.FileChangedDuringHashing):
+            tools.calculate_stable_file_hashes(path)
+
+
+def test_stable_hashes_detect_mtime_change_during_reading(tmp_path):
+    path = tmp_path / "file.bin"
+    path.write_bytes(b"data")
+
+    def touch_and_hash(target):
+        with open(target, "rb") as file:
+            file.read()
+        os.utime(path, ns=(0, 1))
+        return {"md5": "0", "sha1": "0", "sha256": "0"}
+
+    with mock.patch.object(tools, "calculate_file_hashes", touch_and_hash):
+        with pytest.raises(tools.FileChangedDuringHashing):
+            tools.calculate_stable_file_hashes(path)
+
+
+def test_stable_hashes_detect_replacement_during_reading(tmp_path):
+    path = tmp_path / "file.bin"
+    path.write_bytes(b"payload")
+    original = path.stat()
+    replacement = tmp_path / "replacement.bin"
+    replacement.write_bytes(b"payload")
+    os.utime(replacement, ns=(original.st_atime_ns, original.st_mtime_ns))
+
+    def replace_and_hash(target):
+        with open(target, "rb") as file:
+            file.read()
+        replacement.replace(path)
+        return {"md5": "0", "sha1": "0", "sha256": "0"}
+
+    with mock.patch.object(tools, "calculate_file_hashes", replace_and_hash):
+        with pytest.raises(tools.FileChangedDuringHashing):
+            tools.calculate_stable_file_hashes(path)
+
+
+def test_stable_hashes_missing_file(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        tools.calculate_stable_file_hashes(tmp_path / "missing.bin")
+
+
+def test_stable_hashes_access_error(tmp_path):
+    path = tmp_path / "file.bin"
+    path.write_bytes(b"data")
+    with mock.patch("builtins.open", side_effect=PermissionError("access denied")):
+        with pytest.raises(PermissionError):
+            tools.calculate_stable_file_hashes(path)
 
 
 def test_base64_known_value():

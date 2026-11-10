@@ -30,7 +30,7 @@ import database
 import repositories
 import reports
 import tools
-from constants import STATUSES
+from constants import OTHER_STATUS_LABEL, STATUSES
 from dialogs import ChallengeDialog, ChallengeDetailsDialog, CompetitionDialog
 
 _ENCODER_OPERATIONS = (
@@ -92,6 +92,8 @@ class MainWindow(QMainWindow):
             label = QLabel()
             self.status_labels[status] = label
             status_form.addRow(status, label)
+        self.other_status_label = QLabel()
+        status_form.addRow(OTHER_STATUS_LABEL, self.other_status_label)
         layout.addWidget(self.status_group)
 
         self.recent_group = QGroupBox("Последние задания")
@@ -324,6 +326,7 @@ class MainWindow(QMainWindow):
         self.solved_label.setText(f"{stats['solved_challenges']} ({stats['solved_percentage']}%)")
         for status, count in stats["status_counts"].items():
             self.status_labels[status].setText(str(count))
+        self.other_status_label.setText(str(stats["other_challenges"]))
 
         columns = ("title", "competition_name", "status", "updated_at")
         self.recent_table.setRowCount(len(recent))

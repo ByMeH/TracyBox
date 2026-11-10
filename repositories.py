@@ -189,8 +189,13 @@ def get_dashboard_stats(connection: sqlite3.Connection) -> dict[str, object]:
     total_competitions = connection.execute("SELECT COUNT(*) FROM competitions").fetchone()[0]
     total_challenges = connection.execute("SELECT COUNT(*) FROM challenges").fetchone()[0]
     status_counts = dict.fromkeys(STATUSES, 0)
+    other_challenges = 0
     for row in connection.execute("SELECT status, COUNT(*) FROM challenges GROUP BY status"):
-        status_counts[row["status"]] = row[1]
+        status = row["status"]
+        if status in status_counts:
+            status_counts[status] = row[1]
+        else:
+            other_challenges += row[1]
     solved_challenges = status_counts["Решено"]
     solved_percentage = round(solved_challenges * 100 / total_challenges) if total_challenges else 0
     return {
@@ -199,6 +204,7 @@ def get_dashboard_stats(connection: sqlite3.Connection) -> dict[str, object]:
         "solved_challenges": solved_challenges,
         "solved_percentage": solved_percentage,
         "status_counts": status_counts,
+        "other_challenges": other_challenges,
     }
 
 

@@ -223,6 +223,113 @@ def test_artifact_constraints(connection):
     assert repositories.get_artifacts(connection, challenge_id) == []
 
 
+@pytest.fixture
+def legacy_connection(tmp_path):
+    # Production CHECK constraints reject unknown statuses, so this schema mirrors
+    # only the tables needed by dashboard statistics without the status CHECK.
+    connection = connect_database(tmp_path / "legacy.db")
+    connection.executescript(
+        """
+        CREATE TABLE competitions (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL
+        );
+        CREATE TABLE challenges (
+            id INTEGER PRIMARY KEY,
+            competition_id INTEGER NOT NULL REFERENCES competitions (id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL
+        );
+        """
+    )
+    yield connection
+    connection.close()
+
+
+def _prepare_legacy_challenges(connection, statuses):
+    with connection:
+        competition_id = connection.execute(
+            "INSERT INTO competitions (name) VALUES ('LegacyCTF')"
+        ).lastrowid
+        for position, status in enumerate(statuses):
+            connection.execute(
+                "INSERT INTO challenges (competition_id, title, status) VALUES (?, ?, ?)",
+                (competition_id, f"Challenge {position}", status),
+            )
+
+
+def test_dashboard_stats_standard_statuses(connection):
+    competition_id = repositories.add_competition(connection, "TestCTF")
+    for status in STATUSES:
+        repositories.add_challenge(connection, competition_id, f"Challenge {status}", status=status)
+
+    stats = repositories.get_dashboard_stats(connection)
+
+    assert stats["status_counts"] == dict.fromkeys(STATUSES, 1)
+    assert stats["other_challenges"] == 0
+    assert stats["total_challenges"] == len(STATUSES)
+    assert stats["solved_challenges"] == 1
+    assert stats["solved_percentage"] == 25
+
+
+def test_dashboard_stats_single_unknown_status(legacy_connection):
+    _prepare_legacy_challenges(legacy_connection, ["Решено", "Отложено"])
+
+    stats = repositories.get_dashboard_stats(legacy_connection)
+
+    assert stats["total_challenges"] == 2
+    assert stats["solved_challenges"] == 1
+    assert stats["solved_percentage"] == 50
+    assert stats["other_challenges"] == 1
+    assert stats["status_counts"]["Решено"] == 1
+
+
+def test_dashboard_stats_multiple_unknown_statuses(legacy_connection):
+    _prepare_legacy_challenges(legacy_connection, ["Черновик", "Отложено", "Решено"])
+
+    stats = repositories.get_dashboard_stats(legacy_connection)
+
+    assert stats["total_challenges"] == 3
+    assert stats["solved_challenges"] == 1
+    assert stats["solved_percentage"] == 33
+    assert stats["other_challenges"] == 2
+
+
+def test_dashboard_stats_repeated_unknown_status(legacy_connection):
+    _prepare_legacy_challenges(legacy_connection, ["Отложено", "Отложено", "Отложено"])
+
+    stats = repositories.get_dashboard_stats(legacy_connection)
+
+    assert stats["total_challenges"] == 3
+    assert stats["solved_challenges"] == 0
+    assert stats["solved_percentage"] == 0
+    assert stats["other_challenges"] == 3
+
+
+def test_dashboard_stats_unknown_schema_empty(legacy_connection):
+    stats = repositories.get_dashboard_stats(legacy_connection)
+
+    assert stats["total_competitions"] == 0
+    assert stats["total_challenges"] == 0
+    assert stats["solved_challenges"] == 0
+    assert stats["solved_percentage"] == 0
+    assert stats["other_challenges"] == 0
+    assert stats["status_counts"] == dict.fromkeys(STATUSES, 0)
+
+
+def test_dashboard_stats_unknown_status_does_not_break_status_labels(legacy_connection):
+    _prepare_legacy_challenges(legacy_connection, ["Новое", "Решено", "Отложено"])
+
+    stats = repositories.get_dashboard_stats(legacy_connection)
+    labels = dict.fromkeys(STATUSES, 0)
+    for status, count in stats["status_counts"].items():
+        labels[status] = count
+
+    assert set(stats["status_counts"]) == set(STATUSES)
+    assert labels["Решено"] == 1
+    assert stats["other_challenges"] == 1
+
+
 def test_dashboard_stats_empty_database(connection):
     stats = repositories.get_dashboard_stats(connection)
     assert stats["total_competitions"] == 0

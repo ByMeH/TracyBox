@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import re
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -63,6 +64,14 @@ def encode_url(text: str) -> str:
     return quote(text, safe="")
 
 
+# unquote не считает ошибкой «%», за которым нет двух hex-цифр, поэтому такие
+# места проверяем отдельно
+_MALFORMED_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
+
+
 def decode_url(text: str) -> str:
+    malformed = _MALFORMED_PERCENT.search(text)
+    if malformed:
+        raise ValueError(f"Некорректная percent-последовательность в позиции {malformed.start()}")
     # errors="strict" превращает битую UTF-8-последовательность в UnicodeDecodeError
     return unquote(text, errors="strict")

@@ -295,3 +295,57 @@ def test_url_encode_empty_string():
 def test_url_decode_invalid_utf8_sequence():
     with pytest.raises(UnicodeDecodeError):
         tools.decode_url("%ff%fe")
+
+
+def test_url_decode_space_sequence():
+    assert tools.decode_url("%20") == " "
+
+
+def test_url_decode_cyrillic_letter():
+    assert tools.decode_url("%D0%9F") == "П"
+
+
+def test_url_decode_several_sequences_in_row():
+    assert tools.decode_url("%41%42%43%20%D0%9F") == "ABC П"
+
+
+def test_url_decode_plain_text_unchanged():
+    assert tools.decode_url("abc?x=1&y=2") == "abc?x=1&y=2"
+
+
+def test_url_decode_percent_encoded_percent():
+    assert tools.decode_url("%25") == "%"
+
+
+def test_url_decode_lone_percent():
+    with pytest.raises(ValueError):
+        tools.decode_url("%")
+
+
+def test_url_decode_truncated_sequence():
+    with pytest.raises(ValueError):
+        tools.decode_url("%2")
+
+
+def test_url_decode_non_hex_digits():
+    with pytest.raises(ValueError):
+        tools.decode_url("%ZZ")
+    with pytest.raises(ValueError):
+        tools.decode_url("%GG")
+
+
+def test_url_decode_malformed_sequence_inside_text():
+    with pytest.raises(ValueError):
+        tools.decode_url("abc%Zdef")
+    with pytest.raises(ValueError):
+        tools.decode_url("text % end")
+
+
+def test_url_decode_invalid_byte_value():
+    with pytest.raises(UnicodeDecodeError):
+        tools.decode_url("%FF")
+
+
+def test_url_decode_broken_multibyte_sequence():
+    with pytest.raises(UnicodeDecodeError):
+        tools.decode_url("%C3%28")

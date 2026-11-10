@@ -9,9 +9,16 @@ from database import connect_database, initialize_database
 from main_window import MainWindow
 
 
+def resource_path(relative_path: str) -> Path:
+    # В сборке PyInstaller ресурсы распаковываются во временный каталог sys._MEIPASS
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS")) / relative_path
+    return Path(__file__).resolve().parent / relative_path
+
+
 def main() -> int:
     app = QApplication(sys.argv)
-    icon_path = Path(__file__).resolve().parent / "assets" / "tracebox.svg"
+    icon_path = resource_path("assets/tracebox.svg")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 

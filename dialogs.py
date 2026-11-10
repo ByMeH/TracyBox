@@ -387,14 +387,30 @@ class ChallengeDetailsDialog(QDialog):
         if not path:
             return
         try:
+            stat_before = Path(path).stat()
             hashes = tools.calculate_file_hashes(path)
-            file_size = Path(path).stat().st_size
+            stat_after = Path(path).stat()
         except OSError as error:
             QMessageBox.critical(self, "Ошибка чтения файла", f"Не удалось прочитать файл: {error}")
             return
+        if (
+            stat_before.st_size,
+            stat_before.st_mtime_ns,
+            stat_before.st_dev,
+            stat_before.st_ino,
+        ) != (
+            stat_after.st_size,
+            stat_after.st_mtime_ns,
+            stat_after.st_dev,
+            stat_after.st_ino,
+        ):
+            QMessageBox.warning(
+                self, "Файл изменён", "Файл изменился во время чтения. Повторите добавление"
+            )
+            return
         try:
             repositories.add_artifact(
-                self.connection, self.challenge_id, path, Path(path).name, file_size, hashes["sha256"]
+                self.connection, self.challenge_id, path, Path(path).name, stat_after.st_size, hashes["sha256"]
             )
         except sqlite3.Error as error:
             self._show_database_error(error)

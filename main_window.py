@@ -1,18 +1,23 @@
 import sqlite3
 from collections.abc import Callable
+from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTabWidget,
     QTableWidget,
@@ -22,8 +27,19 @@ from PyQt6.QtWidgets import (
 )
 
 import repositories
+import reports
+import tools
 from constants import STATUSES
 from dialogs import ChallengeDialog, ChallengeDetailsDialog, CompetitionDialog
+
+_ENCODER_OPERATIONS = (
+    ("Base64: кодировать", tools.encode_base64, "Не удалось выполнить операцию."),
+    ("Base64: декодировать", tools.decode_base64, "Некорректная строка Base64."),
+    ("Hex: кодировать", tools.encode_hex, "Не удалось выполнить операцию."),
+    ("Hex: декодировать", tools.decode_hex, "Некорректная шестнадцатеричная строка."),
+    ("URL: кодировать", tools.encode_url, "Не удалось выполнить операцию."),
+    ("URL: декодировать", tools.decode_url, "Некорректная URL-кодированная строка."),
+)
 
 
 class MainWindow(QMainWindow):
@@ -98,6 +114,7 @@ class MainWindow(QMainWindow):
                 ("Добавить", self._add_competition),
                 ("Изменить", self._edit_competition),
                 ("Удалить", self._delete_competition),
+                ("Экспорт…", self._export_competition),
             ])
         )
         return page
@@ -138,14 +155,74 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_tools_tab(self) -> QWidget:
+        tabs = QTabWidget()
+        tabs.addTab(self._build_hashing_tab(), "Хеширование")
+        tabs.addTab(self._build_encoders_tab(), "Кодировщики")
+        return tabs
+
+    def _build_hashing_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        note = QLabel("Хеширование файлов и кодировщики Base64/Hex/URL будут подключены на следующем этапе.")
-        note.setWordWrap(True)
-        note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        choose_button = QPushButton("Выбрать файл…")
+        choose_button.clicked.connect(self._choose_file_to_hash)
+
+        self.hash_file_label = QLabel("Файл не выбран")
+        self.hash_file_label.setWordWrap(True)
+
+        form = QFormLayout()
+        self.hash_fields: dict[str, QLineEdit] = {}
+        for caption, key in (("MD5", "md5"), ("SHA-1", "sha1"), ("SHA-256", "sha256")):
+            field = QLineEdit()
+            field.setReadOnly(True)
+            self.hash_fields[key] = field
+            form.addRow(caption, self._make_hash_row(field))
+
+        layout.addWidget(choose_button)
+        layout.addWidget(self.hash_file_label)
+        layout.addLayout(form)
         layout.addStretch()
-        layout.addWidget(note)
-        layout.addStretch()
+        return page
+
+    def _make_hash_row(self, field: QLineEdit) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        copy_button = QPushButton("Копировать")
+        copy_button.clicked.connect(lambda _, target=field: self._copy_to_clipboard(target.text()))
+        layout.addWidget(field, stretch=1)
+        layout.addWidget(copy_button)
+        return row
+
+    def _build_encoders_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        layout.addWidget(QLabel("Исходный текст:"))
+        self.encoder_input = QPlainTextEdit()
+        layout.addWidget(self.encoder_input)
+
+        operations = QHBoxLayout()
+        for label, function, error_message in _ENCODER_OPERATIONS:
+            button = QPushButton(label)
+            button.clicked.connect(
+                lambda _, action=function, message=error_message: self._run_encoder(action, message)
+            )
+            operations.addWidget(button)
+        operations.addStretch()
+        layout.addLayout(operations)
+
+        layout.addWidget(QLabel("Результат:"))
+        self.encoder_result = QPlainTextEdit()
+        self.encoder_result.setReadOnly(True)
+        layout.addWidget(self.encoder_result)
+
+        copy_button = QPushButton("Копировать результат")
+        copy_button.clicked.connect(
+            lambda _, target=self.encoder_result: self._copy_to_clipboard(target.toPlainText())
+        )
+        layout.addWidget(copy_button)
+
         return page
 
     def _make_table(self, headers: list[str]) -> QTableWidget:
@@ -392,6 +469,97 @@ class MainWindow(QMainWindow):
             self.connection, self._challenges_by_id[challenge_id], parent=self
         )
         dialog.exec()
+
+    def _choose_file_to_hash(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Выберите файл для хеширования")
+        if not path:
+            return
+        try:
+            file_size = Path(path).stat().st_size
+            hashes = tools.calculate_file_hashes(path)
+        except OSError as error:
+            QMessageBox.critical(self, "Ошибка чтения файла", f"Не удалось прочитать файл: {error}")
+            return
+        self.hash_file_label.setText(f"{Path(path).name} — {file_size} байт")
+        for key, value in hashes.items():
+            self.hash_fields[key].setText(value)
+
+    def _run_encoder(self, function: Callable[[str], str], invalid_input_message: str) -> None:
+        text = self.encoder_input.toPlainText()
+        try:
+            result = function(text)
+        except UnicodeDecodeError:
+            self.encoder_result.clear()
+            QMessageBox.warning(
+                self, "Ошибка кодировщика", "Результат нельзя декодировать как UTF-8."
+            )
+            return
+        except ValueError:
+            self.encoder_result.clear()
+            QMessageBox.warning(self, "Ошибка кодировщика", invalid_input_message)
+            return
+        self.encoder_result.setPlainText(result)
+        self.statusBar().showMessage("Операция выполнена")
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        QApplication.clipboard().setText(text)
+        self.statusBar().showMessage("Результат скопирован")
+
+    def _export_competition(self) -> None:
+        competition_id = self._selected_id(self.competitions_table)
+        if competition_id is None:
+            self._inform_no_selection("соревнование")
+            return
+        export_format = self._ask_export_format()
+        if export_format is None:
+            return
+        competition = self._competitions_by_id[competition_id]
+        default_name = reports.sanitize_filename(competition["name"])
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить файл экспорта",
+            f"{default_name}.{export_format}",
+            "Файл CSV (*.csv)" if export_format == "csv" else "Файл TXT (*.txt)",
+        )
+        if not path:
+            return
+        export_path = Path(path)
+        if export_path.suffix == "":
+            export_path = export_path.with_suffix(f".{export_format}")
+        try:
+            challenges = repositories.get_challenges(self.connection, competition_id=competition_id)
+            if export_format == "csv":
+                reports.export_challenges_csv(challenges, export_path)
+            else:
+                entries = []
+                for challenge in challenges:
+                    entries.append((
+                        challenge,
+                        repositories.get_notes(self.connection, challenge["id"]),
+                        repositories.get_artifacts(self.connection, challenge["id"]),
+                    ))
+                reports.export_competition_txt(competition, entries, export_path)
+        except sqlite3.Error as error:
+            self._show_database_error(error)
+            return
+        except OSError as error:
+            QMessageBox.critical(self, "Ошибка экспорта", f"Не удалось записать файл: {error}")
+            return
+        self.statusBar().showMessage(f"Экспорт завершён: {export_path}")
+
+    def _ask_export_format(self) -> str | None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Экспорт соревнования")
+        box.setText("Выберите формат файла экспорта.")
+        csv_button = box.addButton("CSV", QMessageBox.ButtonRole.ActionRole)
+        txt_button = box.addButton("TXT", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is csv_button:
+            return "csv"
+        if box.clickedButton() is txt_button:
+            return "txt"
+        return None
 
     def _selected_id(self, table: QTableWidget) -> int | None:
         item = table.item(table.currentRow(), 0)

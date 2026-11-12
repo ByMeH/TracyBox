@@ -119,7 +119,8 @@ def overwrites_database(path: Path | str, database_path: Path | str | None) -> b
                 return True
         except FileNotFoundError:
             continue
-        except OSError:
+        except (OSError, ValueError):
+            # сравнение невозможно (например, NUL в пути) — надёжнее запретить экспорт
             return True
     return False
 

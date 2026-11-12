@@ -1,4 +1,5 @@
 import csv
+import errno
 import os
 import sqlite3
 from pathlib import Path
@@ -55,6 +56,23 @@ def load_entries(connection: sqlite3.Connection, competition_id: int):
         artifacts = repositories.get_artifacts(connection, challenge["id"])
         entries.append((challenge, notes, artifacts))
     return entries
+
+
+def symlink_privilege_error(error: OSError) -> bool:
+    # на Windows обычному пользователю запрещено создавать ссылки (WinError 1314);
+    # на других ОС нехватку прав показывают EPERM/EACCES
+    if getattr(error, "winerror", None) == 1314:
+        return True
+    return error.errno in (errno.EPERM, errno.EACCES)
+
+
+def create_symlink_or_skip(link: Path, target: Path, target_is_directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as error:
+        if symlink_privilege_error(error):
+            pytest.skip(f"создание символических ссылок требует привилегий: {error}")
+        raise
 
 
 def test_csv_content_with_cyrillic(connection, filled_competition, tmp_path):
@@ -198,10 +216,6 @@ def test_equivalent_paths_to_database_are_rejected(tmp_path):
     initialize_database(connection)
     connection.close()
 
-    file_link = tmp_path / "tracebox-link.db"
-    file_link.symlink_to(database_path)
-    directory_link = tmp_path / "link"
-    directory_link.symlink_to(directory)
     hardlink = tmp_path / "tracebox-hardlink.db"
     os.link(database_path, hardlink)
 
@@ -211,13 +225,39 @@ def test_equivalent_paths_to_database_are_rejected(tmp_path):
         directory / "sub" / ".." / "tracebox.db",
         Path(f"{directory}//tracebox.db"),
         Path(os.path.relpath(database_path)),
-        file_link,
-        directory_link / "tracebox.db",
         hardlink,
     ]
 
     for destination in destinations:
         assert reports.overwrites_database(destination, database_path), destination
+
+
+def test_symlink_to_database_file_is_rejected(tmp_path):
+    directory = tmp_path / "data"
+    directory.mkdir()
+    database_path = directory / "tracebox.db"
+    connection = connect_database(database_path)
+    initialize_database(connection)
+    connection.close()
+
+    link = tmp_path / "tracebox-link.db"
+    create_symlink_or_skip(link, database_path)
+
+    assert reports.overwrites_database(link, database_path)
+
+
+def test_symlink_to_database_directory_is_rejected(tmp_path):
+    directory = tmp_path / "data"
+    directory.mkdir()
+    database_path = directory / "tracebox.db"
+    connection = connect_database(database_path)
+    initialize_database(connection)
+    connection.close()
+
+    link = tmp_path / "data-link"
+    create_symlink_or_skip(link, directory, target_is_directory=True)
+
+    assert reports.overwrites_database(link / "tracebox.db", database_path)
 
 
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
@@ -243,20 +283,29 @@ def test_sidecar_equivalent_paths_are_rejected(connection, tmp_path, suffix):
     database_path = get_database_path(connection)
     sidecar = Path(f"{database_path}{suffix}")
     sidecar.write_bytes(b"journal data")
-    file_link = tmp_path / f"sidecar-link{suffix}"
-    file_link.symlink_to(sidecar)
     hardlink = tmp_path / f"sidecar-hardlink{suffix}"
     os.link(sidecar, hardlink)
 
     destinations = [
         sidecar,
         database_path.parent / "sub" / ".." / sidecar.name,
-        file_link,
         hardlink,
     ]
 
     for destination in destinations:
         assert reports.overwrites_database(destination, database_path), destination
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_sidecar_symlink_destination_is_rejected(connection, tmp_path, suffix):
+    database_path = get_database_path(connection)
+    sidecar = Path(f"{database_path}{suffix}")
+    sidecar.write_bytes(b"journal data")
+
+    link = tmp_path / f"sidecar-link{suffix}"
+    create_symlink_or_skip(link, sidecar)
+
+    assert reports.overwrites_database(link, database_path)
 
 
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])

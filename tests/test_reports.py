@@ -208,7 +208,7 @@ def test_save_report_over_database_is_rejected(connection, filled_competition):
     assert database_path.read_bytes() == before
 
 
-def test_equivalent_paths_to_database_are_rejected(tmp_path):
+def test_equivalent_paths_to_database_are_rejected(tmp_path, monkeypatch):
     directory = tmp_path / "data"
     directory.mkdir()
     database_path = directory / "tracebox.db"
@@ -219,12 +219,16 @@ def test_equivalent_paths_to_database_are_rejected(tmp_path):
     hardlink = tmp_path / "tracebox-hardlink.db"
     os.link(database_path, hardlink)
 
+    monkeypatch.chdir(tmp_path)
+    relative = Path(os.path.relpath(database_path))
+    assert relative.resolve() == database_path.resolve()
+
     destinations = [
         database_path,
         directory / "." / "tracebox.db",
         directory / "sub" / ".." / "tracebox.db",
         Path(f"{directory}//tracebox.db"),
-        Path(os.path.relpath(database_path)),
+        relative,
         hardlink,
     ]
 
